@@ -1,0 +1,17 @@
+# Please fill these values based on the papers
+# Expected format:
+# dataset_name:
+#   fhlsnn_accuracy: 95.0
+#   mfhlsnn_accuracy: 96.0
+
+iris:
+  fhlsnn_accuracy: # TODO
+  mfhlsnn_accuracy: # TODO
+
+wine:
+  fhlsnn_accuracy: # TODO
+  mfhlsnn_accuracy: # TODO
+
+breast_cancer:
+  fhlsnn_accuracy: # TODO
+  mfhlsnn_accuracy: # TODO
