@@ -1,7 +1,16 @@
 import numpy as np
 from ml_service.benchmark.datasets import load_dataset
-from ml_service.benchmark.harness import run_experiment
+# run_experiment was removed from harness (PRD §4.5 refactor, Step 0i).
+# This legacy exploration script is NOT used by the sweep pipeline.
+# It is kept for reference only and is not imported anywhere critical.
 from ml_service.fhlsnn.fhlsnn import FHLSNN
+
+
+def run_experiment(*args, **kwargs):
+    raise NotImplementedError(
+        "run_experiment was deleted from harness.py (Step 0i refactor). "
+        "Use get_cv_folds / run_one_method from ml_service.benchmark.harness instead."
+    )
 from ml_service.reducers.m1_prefilter import run_m1_prefilter
 from ml_service.reducers.m3_prune import run_m3_prune
 from ml_service.benchmark.baselines import run_cnn, run_enn, run_kmeans_prototypes, run_random_subsampling

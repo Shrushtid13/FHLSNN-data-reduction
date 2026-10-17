@@ -16,9 +16,9 @@ Protocol (PRD 4.5 "Common fit set"):
   No row from test_idx ever reaches fit().
 
 Hyperparameter tuning (PRD 4.5):
-  θ (zeta) AND γ (gamma) are tuned once per dataset on the validation split
-  using a small grid over the unreduced model.  The best (θ, γ) pair is then
-  frozen for all reduction methods on that dataset.
+  θ (zeta) AND γ (gamma) are tuned once per outer fold on that fold's validation
+  split only using a small grid over the unreduced model. The best (θ, γ) pair is
+  then frozen for all reduction methods in that fold.
 """
 
 import numpy as np
@@ -32,6 +32,121 @@ from ml_service.benchmark.metrics import (
     compute_classification_metrics,
     compute_reduction_metrics,
 )
+
+
+# ── fold-level primitives (shared by harness and sweep script) ─────────────
+def prepare_fold(X, y, train_idx, test_idx, val_size=0.20, random_state=42):
+    """Carve validation from training fold, scale on fit set only.
+
+    Returns dict with keys:
+        fit_idx, val_idx, test_idx (absolute indices into X),
+        X_fit, y_fit, X_val, y_val, X_test, y_test (scaled arrays),
+        scaler (fitted MinMaxScaler), n_train (fit-set size).
+    """
+    sss = StratifiedShuffleSplit(
+        n_splits=1, test_size=val_size, random_state=random_state
+    )
+    fit_local, val_local = next(sss.split(X[train_idx], y[train_idx]))
+    fit_idx = train_idx[fit_local]
+    val_idx = train_idx[val_local]
+
+    assert len(np.intersect1d(fit_idx, test_idx)) == 0, "LEAKAGE: fit∩test"
+    assert len(np.intersect1d(val_idx, test_idx)) == 0, "LEAKAGE: val∩test"
+
+    scaler = MinMaxScaler()
+    X_fit  = scaler.fit_transform(X[fit_idx])
+    X_val  = scaler.transform(X[val_idx])
+    X_test = scaler.transform(X[test_idx])
+
+    return {
+        'fit_idx': fit_idx, 'val_idx': val_idx, 'test_idx': test_idx,
+        'X_fit': X_fit, 'y_fit': y[fit_idx],
+        'X_val': X_val, 'y_val': y[val_idx],
+        'X_test': X_test, 'y_test': y[test_idx],
+        'scaler': scaler, 'n_train': len(fit_idx),
+    }
+
+
+def get_cv_folds(X, y, n_splits=5, val_size=0.20, random_state=42):
+    """Generator yielding prepared fold dictionaries for outer CV.
+
+    Yields dicts with:
+        fold_idx, fit_idx, val_idx, test_idx,
+        X_fit, y_fit, X_val, y_val, X_test, y_test,
+        scaler, n_train
+    """
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    for fold_idx, (train_idx, test_idx) in enumerate(skf.split(X, y)):
+        fd = prepare_fold(X, y, train_idx, test_idx, val_size=val_size, random_state=random_state)
+        fd['fold_idx'] = fold_idx
+        yield fd
+
+
+def run_one_method(fold_data, model_cls, model_params,
+                   pre_reducer_fn=None, pre_reducer_params=None,
+                   post_reducer_fn=None, post_reducer_params=None):
+    """Train and evaluate a single method on a prepared fold.
+
+    Returns dict with accuracy, macro_f1, n_segments, stored_vectors,
+    reduction_vs_raw, zero_mem_frac, train_time_s, and the fitted model.
+    """
+    X_fit = fold_data['X_fit']
+    y_fit = fold_data['y_fit']
+    X_test = fold_data['X_test']
+    y_test = fold_data['y_test']
+    X_val = fold_data['X_val']
+    y_val = fold_data['y_val']
+    n_train = fold_data['n_train']
+
+    # pre-reducer
+    if pre_reducer_fn is not None:
+        pre_ret = pre_reducer_fn(X_fit, y_fit, **(pre_reducer_params or {}))
+        X_fit_red, y_fit_red = pre_ret[0], pre_ret[1]
+    else:
+        X_fit_red, y_fit_red = X_fit, y_fit
+
+    # train
+    model = model_cls(**model_params)
+    t0 = time.perf_counter()
+    if len(y_fit_red) > 0:
+        model.fit(X_fit_red, y_fit_red)
+
+    # post-reducer
+    if post_reducer_fn is not None:
+        post_ret = post_reducer_fn(model, X_val, y_val, **(post_reducer_params or {}))
+        if isinstance(post_ret, tuple):
+            model = post_ret[0]
+        else:
+            model = post_ret
+
+    train_time_s = time.perf_counter() - t0
+
+    # predict
+    y_pred = model.predict(X_test)
+    class_met = compute_classification_metrics(y_test, y_pred)
+    zero_mem_frac = getattr(model, '_last_zero_mem_frac', 0.0)
+    n_segments = getattr(model, 'n_segments_', 0)
+
+    # stored vectors
+    stored_vecs = 0
+    for seg in model.segments_:
+        if np.array_equal(seg['V'], seg['W']):
+            stored_vecs += 1
+        else:
+            stored_vecs += 2
+
+    red_met = compute_reduction_metrics(n_train=n_train, stored_vectors=stored_vecs)
+
+    return {
+        **class_met,
+        'n_segments': n_segments,
+        'stored_vectors': stored_vecs,
+        'zero_mem_frac': zero_mem_frac,
+        'train_time_s': train_time_s,
+        **red_met,
+        'model': model,
+    }
+
 
 
 # ── hyperparameter grids (PRD 4.5) ────────────────────────────────────────
@@ -52,7 +167,8 @@ def tune_hyperparams(
     """Grid-search (θ, γ) on the validation split.
 
     Returns the best (theta, gamma) pair by validation accuracy.
-    The model is re-trained from scratch for each candidate.
+    Tie-break (PRD 4.5): when several (θ, γ) pairs reach the same validation
+    accuracy, choose the one with fewer segments (larger θ).
     """
     theta_grid = theta_grid or DEFAULT_THETA_GRID
     gamma_grid = gamma_grid or DEFAULT_GAMMA_GRID
@@ -60,6 +176,7 @@ def tune_hyperparams(
     best_acc   = -1.0
     best_theta = theta_grid[0]
     best_gamma = gamma_grid[0]
+    min_segs   = float('inf')
 
     for theta, gamma in product(theta_grid, gamma_grid):
         params = {**base_params, 'zeta': theta, 'gamma': gamma}
@@ -67,163 +184,12 @@ def tune_hyperparams(
         mdl.fit(X_fit, y_fit)
         y_pred_val = mdl.predict(X_val)
         acc = float(np.mean(y_pred_val == y_val))
-        if acc > best_acc:
+        n_segs = getattr(mdl, 'n_segments_', float('inf'))
+        if acc > best_acc or (acc == best_acc and (n_segs < min_segs or (n_segs == min_segs and theta > best_theta))):
             best_acc   = acc
+            min_segs   = n_segs
             best_theta = theta
             best_gamma = gamma
 
     return best_theta, best_gamma
 
-
-def run_experiment(
-    X: np.ndarray,
-    y: np.ndarray,
-    model_cls: Callable,
-    model_params: Dict[str, Any],
-    pre_reducer_fn: Optional[Callable] = None,
-    pre_reducer_params: Optional[Dict[str, Any]] = None,
-    post_reducer_fn: Optional[Callable] = None,
-    post_reducer_params: Optional[Dict[str, Any]] = None,
-    tune_theta_gamma: bool = False,
-    theta_grid: Optional[list] = None,
-    gamma_grid: Optional[list] = None,
-    n_splits: int = 5,
-    val_size: float = 0.20,
-    random_state: int = 42,
-) -> Dict[str, Any]:
-    """
-    Stratified k-fold cross-validation with a common fit/val/test split.
-
-    Args:
-        pre_reducer_fn:  instance-level reducer called AFTER scaling, BEFORE training.
-                         Signature: (X_fit, y_fit, **params) -> (X_red, y_red, n_kept)
-        post_reducer_fn: segment-level reducer called AFTER training.
-                         Signature: (model, X_val, y_val, **params) -> pruned_model
-        tune_theta_gamma: if True, tune zeta and gamma on val before training;
-                         model_params must NOT contain zeta/gamma (they are overwritten).
-    """
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-    metrics_list = []
-
-    for fold, (train_idx, test_idx) in enumerate(skf.split(X, y)):
-
-        # ── carve validation from training fold (ALWAYS, for every method) ─
-        # PRD 4.5: the validation split is carved first for every method.
-        sss = StratifiedShuffleSplit(
-            n_splits=1, test_size=val_size, random_state=random_state
-        )
-        fit_local, val_local = next(sss.split(X[train_idx], y[train_idx]))
-        fit_idx = train_idx[fit_local]   # absolute indices into X
-        val_idx = train_idx[val_local]
-
-        # Assertion: no test index leaks into fit or val
-        assert len(np.intersect1d(fit_idx, test_idx)) == 0, "LEAKAGE: fit∩test"
-        assert len(np.intersect1d(val_idx, test_idx)) == 0, "LEAKAGE: val∩test"
-
-        X_fit_raw = X[fit_idx]
-        y_fit     = y[fit_idx]
-        X_val_raw = X[val_idx]
-        y_val     = y[val_idx]
-        X_test_raw = X[test_idx]
-        y_test     = y[test_idx]
-        n_train    = len(fit_idx)        # PRD 4.4: n_train = fit-set size
-
-        # ── scale on fit set only ───────────────────────────────────────
-        scaler     = MinMaxScaler()
-        X_fit      = scaler.fit_transform(X_fit_raw)   # fit() called once, here
-        X_val      = scaler.transform(X_val_raw)
-        X_test     = scaler.transform(X_test_raw)
-
-        # ── optional (θ, γ) tuning ──────────────────────────────────────
-        if tune_theta_gamma:
-            best_theta, best_gamma = tune_hyperparams(
-                X_fit, y_fit, X_val, y_val,
-                model_cls, model_params, theta_grid, gamma_grid,
-            )
-            params = {**model_params, 'zeta': best_theta, 'gamma': best_gamma}
-        else:
-            params = model_params
-            best_theta = model_params.get('zeta', None)
-            best_gamma = model_params.get('gamma', None)
-
-        # ── instance-level pre-reducer (M1, CNN, ENN, k-means, random) ─
-        if pre_reducer_fn is not None:
-            pre_ret = pre_reducer_fn(
-                X_fit, y_fit, **(pre_reducer_params or {})
-            )
-            # Depending on reducer, it might return 3 items (X, y, result)
-            X_fit_red, y_fit_red = pre_ret[0], pre_ret[1]
-            if hasattr(pre_ret[2], 'kept_idx'):
-                # It's a ReductionResult
-                stored_vecs = len(pre_ret[0])
-            else:
-                stored_vecs = pre_ret[2]
-        else:
-            X_fit_red, y_fit_red = X_fit, y_fit
-            stored_vecs = None   # determined from model after fit
-
-        # ── train ────────────────────────────────────────────────────────
-        model = model_cls(**params)
-        t0 = time.perf_counter()
-        model.fit(X_fit_red, y_fit_red)
-
-        # ── segment-level post-reducer (M3) ──────────────────────────────
-        if post_reducer_fn is not None:
-            post_ret = post_reducer_fn(model, X_val, y_val, **(post_reducer_params or {}))
-            if isinstance(post_ret, tuple):
-                model, facts = post_ret
-            else:
-                model = post_ret
-
-        train_time_s = time.perf_counter() - t0
-
-        # ── predict ──────────────────────────────────────────────────────
-        t0      = time.perf_counter()
-        y_pred  = model.predict(X_test)
-        recall_s = time.perf_counter() - t0
-        recall_ms_per_pattern = recall_s / len(X_test) * 1000.0
-
-        zero_mem_frac = getattr(model, '_last_zero_mem_frac', None)
-
-        # ── stored vectors ────────────────────────────────────────────────
-        if stored_vecs is None:
-            if hasattr(model, 'get_stored_vectors_count'):
-                stored_vecs = model.get_stored_vectors_count()
-            else:
-                stored_vecs = len(X_fit_red)
-
-        n_segments = getattr(model, 'n_segments_', None)
-
-        class_met = compute_classification_metrics(y_test, y_pred)
-        red_met   = compute_reduction_metrics(
-            n_train=n_train,
-            stored_vectors=stored_vecs,
-        )
-
-        fold_row = {
-            'fold':                  fold,
-            'n_train':               n_train,
-            'best_theta':            best_theta,
-            'best_gamma':            best_gamma,
-            'n_segments':            n_segments,
-            'stored_vectors':        stored_vecs,
-            'zero_mem_frac':         zero_mem_frac,
-            'train_time_s':          train_time_s,
-            'recall_ms_per_pattern': recall_ms_per_pattern,
-            **class_met,
-            **red_met,
-        }
-        metrics_list.append(fold_row)
-
-    # ── aggregate ────────────────────────────────────────────────────────
-    agg = {}
-    skip = {'fold'}
-    for key in metrics_list[0]:
-        if key in skip:
-            continue
-        vals = [m[key] for m in metrics_list if m[key] is not None]
-        if vals:
-            agg[f'{key}_mean'] = float(np.mean(vals))
-            agg[f'{key}_std']  = float(np.std(vals))
-
-    return {'folds': metrics_list, 'aggregate': agg}

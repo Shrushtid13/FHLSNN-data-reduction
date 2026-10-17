@@ -34,7 +34,20 @@ Tie-break / all-zero-membership rule (PRD 4.1):
 """
 
 import numpy as np
+import time
 from typing import Optional
+
+
+def _grow_2d(arr: np.ndarray, new_cap: int) -> np.ndarray:
+    out = np.empty((new_cap, arr.shape[1]), dtype=arr.dtype)
+    out[:len(arr)] = arr
+    return out
+
+
+def _grow_1d(arr: np.ndarray, new_cap: int) -> np.ndarray:
+    out = np.empty(new_cap, dtype=arr.dtype)
+    out[:len(arr)] = arr
+    return out
 
 
 class FHLSNN:
@@ -88,6 +101,7 @@ class FHLSNN:
         self._W: np.ndarray = np.empty((0, 1))  # (m, n) right endpoints
         self._cls: np.ndarray = np.empty((0,), dtype=int)
         self._last_zero_mem_frac: float = 0.0
+        self.inter_time_: float = 0.0
 
     # ── internal reset / rebuild ───────────────────────────────────────────
 
@@ -99,6 +113,7 @@ class FHLSNN:
         self._W = np.empty((0, 1))
         self._cls = np.empty((0,), dtype=int)
         self._last_zero_mem_frac = 0.0
+        self.inter_time_ = 0.0
 
     def _rebuild_matrices(self):
         """Sync list-of-dicts → matrix arrays after fit, for vectorised predict."""
@@ -126,7 +141,7 @@ class FHLSNN:
 
         Issue 2 [2003]: paper prints 'y·γ if 0 < y·γ < 1, otherwise 0'.
         Literal reading: far patterns (y * gamma >= 1) get f=0 -> membership=1 (as printed).
-        Fixed: return 1 when y·γ ≥ 1 (issue_2_mfhlsnn_f_zero=False).
+        Applies ONLY to mfhlsnn2003_height. 2014 and 2017 variants use f with y*gamma clipped to [0,1].
         """
         val = y * self.gamma
         if val <= 0.0:
@@ -134,7 +149,9 @@ class FHLSNN:
         if 0.0 < val < 1.0:
             return val
         # val >= 1:
-        return 0.0 if self.issue_2_mfhlsnn_f_zero else 1.0
+        if self.membership_type == 'mfhlsnn2003_height' and self.issue_2_mfhlsnn_f_zero:
+            return 0.0
+        return 1.0
 
     def _scalar_membership(self, R: np.ndarray, V: np.ndarray, W: np.ndarray) -> float:
         """Membership of single pattern R against segment [V, W].
@@ -240,8 +257,12 @@ class FHLSNN:
 
         Shape: (m,).  All operations are NumPy-vectorised; no Python loop over segments.
         """
-        V  = self._V   # (m, n)
-        W  = self._W
+        return self._vec_memberships_custom(R, self._V, self._W)
+
+    def _vec_memberships_custom(self, R: np.ndarray, V: np.ndarray, W: np.ndarray) -> np.ndarray:
+        """Return membership of single pattern R against arbitrary endpoint matrices V, W (m, n)."""
+        if len(V) == 0:
+            return np.empty((0,), dtype=np.float64)
         l1 = np.linalg.norm(W - R, axis=1)    # (m,)
         l2 = np.linalg.norm(V - R, axis=1)
         l  = np.linalg.norm(W - V, axis=1)
@@ -299,14 +320,76 @@ class FHLSNN:
     def _apply_f_mfhlsnn_vec(self, y: np.ndarray) -> np.ndarray:
         """Vectorised f_mfhlsnn, matches _f_mfhlsnn exactly."""
         val   = y * self.gamma
+        f_zero = self.issue_2_mfhlsnn_f_zero if self.membership_type == 'mfhlsnn2003_height' else False
         f_val = np.where(
             val <= 0.0, 0.0,
             np.where(
                 val < 1.0, val,
-                0.0 if self.issue_2_mfhlsnn_f_zero else 1.0
+                0.0 if f_zero else 1.0
             )
         )
         return 1.0 - f_val
+
+    def _single_intersection(self, V1: np.ndarray, W1: np.ndarray,
+                             V2: np.ndarray, W2: np.ndarray) -> bool:
+        """Original per-segment intersection test using np.linalg.lstsq (PRD 4.1)."""
+        d1 = W1 - V1
+        d2 = W2 - V2
+        A  = np.column_stack((d1, -d2))
+        b  = V2 - V1
+        t_sol, residuals, _, _ = np.linalg.lstsq(A, b, rcond=None)
+        res = (float(residuals[0]) if len(residuals)
+               else float(np.linalg.norm(A @ t_sol - b) ** 2))
+
+        if res >= self.collinearity_tol:
+            return False
+
+        t1, t2 = float(t_sol[0]), float(t_sol[1])
+        tol    = self.collinearity_tol
+        on_s1  = (-tol <= t1 <= 1.0 + tol)
+        on_s2  = (-tol <= t2 <= 1.0 + tol)
+        return on_s1 and on_s2
+
+    def _check_intersection_batched(self, V1: np.ndarray, W1: np.ndarray,
+                                   V2_all: np.ndarray, W2_all: np.ndarray) -> bool:
+        """Batched closed-form 2x2 normal equations for intersection against all other segments (PRD Step 1a)."""
+        K = len(V2_all)
+        if K == 0:
+            return False
+
+        tol = self.collinearity_tol
+        d1 = W1 - V1
+        d2 = W2_all - V2_all
+        b = V2_all - V1
+
+        a11 = float(np.dot(d1, d1))
+        a12 = -np.dot(d2, d1)
+        a22 = np.sum(d2 * d2, axis=1)
+        r1 = np.dot(b, d1)
+        r2 = -np.sum(d2 * b, axis=1)
+        det = a11 * a22 - a12 * a12
+
+        # Degenerate cases: determinant ~ 0 or zero-length segments
+        deg = (a11 < 1e-12) | (a22 < 1e-12) | (det <= 1e-12 * (a11 * a22))
+        non_deg = ~deg
+
+        if np.any(non_deg):
+            inv_det = 1.0 / det[non_deg]
+            t1 = (a22[non_deg] * r1[non_deg] - a12[non_deg] * r2[non_deg]) * inv_det
+            t2 = (-a12[non_deg] * r1[non_deg] + a11 * r2[non_deg]) * inv_det
+            diff = t1[:, None] * d1 - t2[:, None] * d2[non_deg] - b[non_deg]
+            res = np.sum(diff * diff, axis=1)
+            on_s1 = (-tol <= t1) & (t1 <= 1.0 + tol)
+            on_s2 = (-tol <= t2) & (t2 <= 1.0 + tol)
+            if np.any((res < tol) & on_s1 & on_s2):
+                return True
+
+        if np.any(deg):
+            for k in np.where(deg)[0]:
+                if self._single_intersection(V1, W1, V2_all[k], W2_all[k]):
+                    return True
+
+        return False
 
     # ── public API ─────────────────────────────────────────────────────────
 
@@ -317,8 +400,8 @@ class FHLSNN:
         point_seg = np.all(np.isclose(self._V, self._W), axis=1)
         return int(np.sum(~point_seg) * 2 + np.sum(point_seg))
 
-    def partial_fit(self, X: np.ndarray, y: np.ndarray) -> 'FHLSNN':
-        """Incremental learning (processes a batch of patterns without resetting)."""
+    def _partial_fit_reference(self, X: np.ndarray, y: np.ndarray) -> 'FHLSNN':
+        """Reference incremental learning (used only by equivalence tests)."""
         indices = np.arange(len(X))
         if self.shuffle:
             rng = np.random.RandomState(self.random_state)
@@ -480,6 +563,235 @@ class FHLSNN:
         self._rebuild_matrices()
         return self
 
+    def partial_fit(self, X: np.ndarray, y: np.ndarray) -> 'FHLSNN':
+        """Incremental learning - fast vectorized path (PRD Step 1a)."""
+        indices = np.arange(len(X))
+        if self.shuffle:
+            rng = np.random.RandomState(self.random_state)
+            rng.shuffle(indices)
+
+        n_samples, n_features = X.shape
+        init_cap = max(64, n_samples // 4)
+
+        V_all = np.empty((init_cap, n_features), dtype=np.float64)
+        W_all = np.empty((init_cap, n_features), dtype=np.float64)
+        cls_all = np.empty(init_cap, dtype=np.int64)
+        n_total = 0
+
+        V_class = {}
+        W_class = {}
+        global_idx_class = {}
+        count_class = {}
+
+        if self.segments_:
+            n_existing = len(self.segments_)
+            if n_existing > init_cap:
+                init_cap = n_existing * 2
+                V_all = np.empty((init_cap, n_features), dtype=np.float64)
+                W_all = np.empty((init_cap, n_features), dtype=np.float64)
+                cls_all = np.empty(init_cap, dtype=np.int64)
+            for s in self.segments_:
+                c = int(s['class'])
+                if c not in count_class:
+                    c_cap = max(32, init_cap // 4)
+                    V_class[c] = np.empty((c_cap, n_features), dtype=np.float64)
+                    W_class[c] = np.empty((c_cap, n_features), dtype=np.float64)
+                    global_idx_class[c] = np.empty(c_cap, dtype=np.int64)
+                    count_class[c] = 0
+
+                if count_class[c] >= len(V_class[c]):
+                    new_ccap = len(V_class[c]) * 2
+                    V_class[c] = _grow_2d(V_class[c], new_ccap)
+                    W_class[c] = _grow_2d(W_class[c], new_ccap)
+                    global_idx_class[c] = _grow_1d(global_idx_class[c], new_ccap)
+
+                V_all[n_total] = s['V']
+                W_all[n_total] = s['W']
+                cls_all[n_total] = c
+
+                c_idx = count_class[c]
+                V_class[c][c_idx] = s['V']
+                W_class[c][c_idx] = s['W']
+                global_idx_class[c][c_idx] = n_total
+                count_class[c] += 1
+                n_total += 1
+
+        for idx in indices:
+            R = X[idx]
+            d_h = int(y[idx])
+
+            if d_h not in count_class:
+                c_cap = max(32, init_cap // 4)
+                V_class[d_h] = np.empty((c_cap, n_features), dtype=np.float64)
+                W_class[d_h] = np.empty((c_cap, n_features), dtype=np.float64)
+                global_idx_class[d_h] = np.empty(c_cap, dtype=np.int64)
+                count_class[d_h] = 0
+
+            m_c = count_class[d_h]
+            V_c = V_class[d_h][:m_c]
+            W_c = W_class[d_h][:m_c]
+
+            # ── step 1: already covered by a same-class segment? ─────────
+            if m_c > 0:
+                mems = self._vec_memberships_custom(R, V_c, W_c)
+                if np.any(mems >= 1.0 - self.collinearity_tol):
+                    continue
+
+            # ── steps 2 & 3: try to extend an existing segment ───────────
+            extended = False
+            extended_local_idx = None
+            old_V_backup = None
+            old_W_backup = None
+
+            if m_c > 0:
+                WmV = W_c - V_c
+                RmV = R - V_c
+                l1_vec = np.linalg.norm(W_c - R, axis=1)
+                l2_vec = np.linalg.norm(V_c - R, axis=1)
+                l_vec  = np.linalg.norm(WmV, axis=1)
+
+                is_point = l_vec < self.collinearity_tol
+                point_extendable = is_point & (l2_vec <= self.zeta)
+
+                if n_features == 2:
+                    cross_vec = np.abs(WmV[:, 0] * RmV[:, 1] - WmV[:, 1] * RmV[:, 0])
+                else:
+                    dot_vec = np.sum(WmV * RmV, axis=1)
+                    WmV_sq  = np.sum(WmV * WmV, axis=1)
+                    RmV_sq  = np.sum(RmV * RmV, axis=1)
+                    cross_sq_vec = np.maximum(0.0, WmV_sq * RmV_sq - dot_vec * dot_vec)
+                    cross_vec = np.sqrt(cross_sq_vec)
+
+                safe_l = np.where(is_point, 1.0, l_vec)
+                height_vec = np.where(is_point, float('inf'), cross_vec / safe_l)
+                is_collinear = (~is_point) & (height_vec < self.collinearity_tol)
+
+                cond_l1_greater = l1_vec > l2_vec
+                new_len = np.where(cond_l1_greater, l1_vec, l2_vec)
+                proper_extendable = is_collinear & (new_len <= self.zeta)
+
+                extendable = point_extendable | proper_extendable
+
+                if np.any(extendable):
+                    extended_local_idx = int(np.argmax(extendable))
+                    old_V_backup = V_c[extended_local_idx].copy()
+                    old_W_backup = W_c[extended_local_idx].copy()
+
+                    g_idx = global_idx_class[d_h][extended_local_idx]
+                    if point_extendable[extended_local_idx]:
+                        W_class[d_h][extended_local_idx] = R
+                        W_all[g_idx] = R
+                    elif cond_l1_greater[extended_local_idx]:
+                        V_class[d_h][extended_local_idx] = R
+                        V_all[g_idx] = R
+                    else:
+                        W_class[d_h][extended_local_idx] = R
+                        W_all[g_idx] = R
+
+                    extended = True
+
+            # ── step 4: create a new point-segment ───────────────────────
+            newly_created = False
+            if not extended:
+                newly_created = True
+                if n_total >= len(V_all):
+                    new_cap = len(V_all) * 2
+                    V_all = _grow_2d(V_all, new_cap)
+                    W_all = _grow_2d(W_all, new_cap)
+                    cls_all = _grow_1d(cls_all, new_cap)
+
+                if count_class[d_h] >= len(V_class[d_h]):
+                    new_ccap = len(V_class[d_h]) * 2
+                    V_class[d_h] = _grow_2d(V_class[d_h], new_ccap)
+                    W_class[d_h] = _grow_2d(W_class[d_h], new_ccap)
+                    global_idx_class[d_h] = _grow_1d(global_idx_class[d_h], new_ccap)
+
+                c_idx = count_class[d_h]
+                V_class[d_h][c_idx] = R
+                W_class[d_h][c_idx] = R
+                global_idx_class[d_h][c_idx] = n_total
+                count_class[d_h] += 1
+
+                V_all[n_total] = R
+                W_all[n_total] = R
+                cls_all[n_total] = d_h
+                n_total += 1
+
+            # ── intersection test ─────────────────────────────────────────
+            if not self.use_intersection_test:
+                continue
+
+            if newly_created and self.step4_intersection == 'skip':
+                continue
+
+            t0_int = time.perf_counter()
+
+            if extended:
+                g_idx = global_idx_class[d_h][extended_local_idx]
+                V1 = V_all[g_idx]
+                W1 = W_all[g_idx]
+            else:
+                V1 = V_all[n_total - 1]
+                W1 = W_all[n_total - 1]
+
+            other_mask = (cls_all[:n_total] != d_h)
+            K = int(np.sum(other_mask))
+            intersection_found = False
+
+            if K > 0:
+                V2_all = V_all[:n_total][other_mask]
+                W2_all = W_all[:n_total][other_mask]
+                intersection_found = self._check_intersection_batched(V1, W1, V2_all, W2_all)
+
+            self.inter_time_ = getattr(self, 'inter_time_', 0.0) + (time.perf_counter() - t0_int)
+
+            if intersection_found:
+                if not newly_created:
+                    g_idx = global_idx_class[d_h][extended_local_idx]
+                    V_class[d_h][extended_local_idx] = old_V_backup
+                    W_class[d_h][extended_local_idx] = old_W_backup
+                    V_all[g_idx] = old_V_backup
+                    W_all[g_idx] = old_W_backup
+
+                    if n_total >= len(V_all):
+                        new_cap = len(V_all) * 2
+                        V_all = _grow_2d(V_all, new_cap)
+                        W_all = _grow_2d(W_all, new_cap)
+                        cls_all = _grow_1d(cls_all, new_cap)
+
+                    if count_class[d_h] >= len(V_class[d_h]):
+                        new_ccap = len(V_class[d_h]) * 2
+                        V_class[d_h] = _grow_2d(V_class[d_h], new_ccap)
+                        W_class[d_h] = _grow_2d(W_class[d_h], new_ccap)
+                        global_idx_class[d_h] = _grow_1d(global_idx_class[d_h], new_ccap)
+
+                    c_idx = count_class[d_h]
+                    V_class[d_h][c_idx] = R
+                    W_class[d_h][c_idx] = R
+                    global_idx_class[d_h][c_idx] = n_total
+                    count_class[d_h] += 1
+
+                    V_all[n_total] = R
+                    W_all[n_total] = R
+                    cls_all[n_total] = d_h
+                    n_total += 1
+                else:
+                    if self.step4_intersection == 'drop_new':
+                        count_class[d_h] -= 1
+                        n_total -= 1
+
+        self.n_segments_ = n_total
+        self._V = V_all[:n_total].copy()
+        self._W = W_all[:n_total].copy()
+        self._cls = cls_all[:n_total].copy()
+        self.segments_ = [{'V': self._V[i], 'W': self._W[i], 'class': int(self._cls[i])} for i in range(n_total)]
+        return self
+
+    def _fit_reference(self, X: np.ndarray, y: np.ndarray) -> 'FHLSNN':
+        """Reference fit (calls _reset and _partial_fit_reference), used only by tests."""
+        self._reset()
+        return self._partial_fit_reference(X, y)
+
     def fit(self, X: np.ndarray, y: np.ndarray) -> 'FHLSNN':
         """Single-pass online learning.
 
@@ -510,19 +822,14 @@ class FHLSNN:
         dists = np.linalg.norm(R - proj, axis=1)
         return dists
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Vectorised prediction with tie-break by nearest segment distance.
-
-        Tie-break rule (PRD 4.1): when all memberships are zero, or when
-        multiple segments share the maximum membership, use the one whose
-        exact segment is closest to R. The fraction of patterns where
-        all memberships were zero is stored in self._last_zero_mem_frac.
-        """
+    def _predict_and_win(self, X: np.ndarray) -> tuple[np.ndarray, list]:
+        """Returns (predicted_classes, winning_segment_indices) for X."""
         if self.n_segments_ == 0:
             raise RuntimeError("Model has not been fitted or has zero segments.")
 
         n  = len(X)
         out = np.empty(n, dtype=self._cls.dtype)
+        winners = []
         zero_count = 0
 
         for i, R in enumerate(X):
@@ -542,8 +849,19 @@ class FHLSNN:
                     dists = self._vec_segment_distances(R)
                     j    = int(candidates[np.argmin(dists[candidates])])
             out[i] = self._cls[j]
+            winners.append(j)
 
         self._last_zero_mem_frac = zero_count / max(n, 1)
+        return out, winners
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Vectorised prediction with tie-break by nearest segment distance.
+        Tie-break rule (PRD 4.1): when all memberships are zero, or when
+        multiple segments share the maximum membership, use the one whose
+        exact segment is closest to R. The fraction of patterns where
+        all memberships were zero is stored in self._last_zero_mem_frac.
+        """
+        out, _ = self._predict_and_win(X)
         return out
 
     def winning_segment(self, X: np.ndarray) -> list:
@@ -552,24 +870,8 @@ class FHLSNN:
         Returns list of int indices into self.segments_.
         Used by M3 (segment-level pruning) and explainability agent.
         """
-        if self.n_segments_ == 0:
-            return []
-        result = []
-        for R in X:
-            mems    = self._vec_memberships(R)
-            max_mem = float(mems.max())
-            if max_mem <= self.collinearity_tol:
-                dists = self._vec_segment_distances(R)
-                j    = int(np.argmin(dists))
-            else:
-                candidates = np.where(mems >= max_mem - self.collinearity_tol)[0]
-                if len(candidates) == 1:
-                    j = int(candidates[0])
-                else:
-                    dists = self._vec_segment_distances(R)
-                    j    = int(candidates[np.argmin(dists[candidates])])
-            result.append(j)
-        return result
+        _, winners = self._predict_and_win(X)
+        return winners
 
     def extract_rules(self) -> list:
         """Human-readable per-segment rules (PRD 6.3).

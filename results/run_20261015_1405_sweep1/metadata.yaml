@@ -1,0 +1,6 @@
+config_sha256: fdd29771cec7e3aa4de27de08de01aefb30bd7b0d7321a82a08a51b4d9f7ad4b
+packages:
+  imbalanced-learn: 0.14.2
+  numpy: 2.3.3
+  scikit-learn: 1.7.2
+python_version: 3.11.9

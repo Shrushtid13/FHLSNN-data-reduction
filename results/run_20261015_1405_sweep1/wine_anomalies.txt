@@ -1,0 +1,148 @@
+M3 validation-set size: 29
+M3 zero-win fraction mean on UNPRUNED model: 0.6620
+M3 max segments it can keep (correct val patterns) mean: 28.3
+
+zero_mem_frac per method:
+  unreduced: 0.0983
+  theta_sweep_0.072: 0.0302
+  theta_sweep_0.180: 0.0302
+  theta_sweep_0.361: 0.0359
+  theta_sweep_0.721: 0.0717
+  theta_sweep_1.442: 0.0983
+  theta_sweep_2.884: 0.0983
+  cnn: 0.1757
+  enn: 0.1019
+  kmeans_0.1: 0.1228
+  kmeans_0.2: 0.1434
+  kmeans_0.3: 0.1323
+  kmeans_0.4: 0.1322
+  kmeans_0.5: 0.1360
+  random_0.2: 0.1680
+  random_0.3: 0.1303
+  random_0.4: 0.1396
+  random_0.5: 0.1380
+  random_0.6: 0.1266
+  random_0.7: 0.1227
+  random_0.8: 0.1171
+  random_0.9: 0.1134
+  m1_0.2_0.1_False: 0.1490
+  m1_0.2_0.1_True: 0.1510
+  m1_0.2_0_False: 0.1566
+  m1_0.2_0_True: 0.1661
+  m1_0.3_0.1_False: 0.1379
+  m1_0.3_0.1_True: 0.1397
+  m1_0.3_0_False: 0.1548
+  m1_0.3_0_True: 0.1396
+  m1_0.4_0.1_False: 0.1304
+  m1_0.4_0.1_True: 0.1209
+  m1_0.4_0_False: 0.1416
+  m1_0.4_0_True: 0.1359
+  m1_0.5_0.1_False: 0.1133
+  m1_0.5_0.1_True: 0.1285
+  m1_0.5_0_False: 0.1153
+  m1_0.5_0_True: 0.1266
+  m1_0.6_0.1_False: 0.1113
+  m1_0.6_0.1_True: 0.1228
+  m1_0.6_0_False: 0.1076
+  m1_0.6_0_True: 0.1114
+  m1_0.7_0.1_False: 0.1152
+  m1_0.7_0.1_True: 0.1152
+  m1_0.7_0_False: 0.1265
+  m1_0.7_0_True: 0.1171
+  m1_0.8_0.1_False: 0.1020
+  m1_0.8_0.1_True: 0.1077
+  m1_0.8_0_False: 0.1209
+  m1_0.8_0_True: 0.1096
+  m1_0.9_0.1_False: 0.1078
+  m1_0.9_0.1_True: 0.1058
+  m1_0.9_0_False: 0.1115
+  m1_0.9_0_True: 0.1038
+  m3_1: 0.1340
+  m3_2: 0.1662
+  m3_3: 0.1870
+  m3_5: 0.1870
+  hybrid_0.2_0.1_False_1: 0.1398
+  hybrid_0.2_0.1_False_2: 0.1663
+  hybrid_0.2_0.1_True_1: 0.1511
+  hybrid_0.2_0.1_True_2: 0.1546
+  hybrid_0.2_0_False_1: 0.1604
+  hybrid_0.2_0_False_2: 0.1661
+  hybrid_0.2_0_True_1: 0.1661
+  hybrid_0.2_0_True_2: 0.1756
+  hybrid_0.3_0.1_False_1: 0.1417
+  hybrid_0.3_0.1_False_2: 0.1757
+  hybrid_0.3_0.1_True_1: 0.1303
+  hybrid_0.3_0.1_True_2: 0.1661
+  hybrid_0.3_0_False_1: 0.1585
+  hybrid_0.3_0_False_2: 0.1679
+  hybrid_0.3_0_True_1: 0.1434
+  hybrid_0.3_0_True_2: 0.1605
+  hybrid_0.4_0.1_False_1: 0.1474
+  hybrid_0.4_0.1_False_2: 0.1794
+  hybrid_0.4_0.1_True_1: 0.1453
+  hybrid_0.4_0.1_True_2: 0.1719
+  hybrid_0.4_0_False_1: 0.1473
+  hybrid_0.4_0_False_2: 0.1720
+  hybrid_0.4_0_True_1: 0.1454
+  hybrid_0.4_0_True_2: 0.1606
+  hybrid_0.5_0.1_False_1: 0.1379
+  hybrid_0.5_0.1_False_2: 0.1643
+  hybrid_0.5_0.1_True_1: 0.1340
+  hybrid_0.5_0.1_True_2: 0.1585
+  hybrid_0.5_0_False_1: 0.1416
+  hybrid_0.5_0_False_2: 0.1681
+  hybrid_0.5_0_True_1: 0.1397
+  hybrid_0.5_0_True_2: 0.1661
+  hybrid_0.6_0.1_False_1: 0.1322
+  hybrid_0.6_0.1_False_2: 0.1756
+  hybrid_0.6_0.1_True_1: 0.1378
+  hybrid_0.6_0.1_True_2: 0.1717
+  hybrid_0.6_0_False_1: 0.1283
+  hybrid_0.6_0_False_2: 0.1661
+  hybrid_0.6_0_True_1: 0.1436
+  hybrid_0.6_0_True_2: 0.1719
+  hybrid_0.7_0.1_False_1: 0.1416
+  hybrid_0.7_0.1_False_2: 0.1718
+  hybrid_0.7_0.1_True_1: 0.1396
+  hybrid_0.7_0.1_True_2: 0.1756
+  hybrid_0.7_0_False_1: 0.1434
+  hybrid_0.7_0_False_2: 0.1775
+  hybrid_0.7_0_True_1: 0.1397
+  hybrid_0.7_0_True_2: 0.1624
+  hybrid_0.8_0.1_False_1: 0.1284
+  hybrid_0.8_0.1_False_2: 0.1721
+  hybrid_0.8_0.1_True_1: 0.1304
+  hybrid_0.8_0.1_True_2: 0.1796
+  hybrid_0.8_0_False_1: 0.1379
+  hybrid_0.8_0_False_2: 0.1606
+  hybrid_0.8_0_True_1: 0.1265
+  hybrid_0.8_0_True_2: 0.1644
+  hybrid_0.9_0.1_False_1: 0.1360
+  hybrid_0.9_0.1_False_2: 0.1700
+  hybrid_0.9_0.1_True_1: 0.1304
+  hybrid_0.9_0.1_True_2: 0.1645
+  hybrid_0.9_0_False_1: 0.1417
+  hybrid_0.9_0_False_2: 0.1907
+  hybrid_0.9_0_True_1: 0.1265
+  hybrid_0.9_0_True_2: 0.1812
+
+Methods with exactly equal mean accuracy:
+  0.936296: m1_0.6_0_False, hybrid_0.5_0.1_True_1, hybrid_0.7_0.1_False_2, hybrid_0.7_0.1_True_2, hybrid_0.9_0_True_2
+  0.95127: theta_sweep_0.072, theta_sweep_0.180, kmeans_0.2, random_0.5
+  0.928836: random_0.2, hybrid_0.6_0.1_False_1, hybrid_0.8_0_False_2
+  0.928942: m1_0.9_0_True, hybrid_0.4_0.1_True_1, hybrid_0.5_0.1_False_2
+  0.928995: m1_0.4_0_True, hybrid_0.4_0_True_1, hybrid_0.9_0_True_1
+  0.943862: kmeans_0.4, m1_0.4_0.1_False
+  0.940106: random_0.3, hybrid_0.9_0.1_True_1
+  0.936402: m1_0.2_0.1_True, hybrid_0.6_0_True_1
+  0.94963: m1_0.5_0.1_False, hybrid_0.9_0.1_False_1
+  0.958889: theta_sweep_1.442, theta_sweep_2.884
+  0.908307: m3_5, hybrid_0.4_0_False_1
+  0.91582: m1_0.5_0_True, hybrid_0.4_0_True_2
+  0.945714: m1_0.7_0.1_False, hybrid_0.7_0.1_False_1
+  0.947619: kmeans_0.5, hybrid_0.8_0_True_1
+  0.956984: unreduced, random_0.7
+  0.938307: hybrid_0.5_0_True_2, hybrid_0.7_0.1_True_1
+  0.942063: hybrid_0.8_0.1_True_1, hybrid_0.9_0.1_True_2
+  0.926984: hybrid_0.7_0_True_2, hybrid_0.9_0.1_False_2
+  0.923175: hybrid_0.6_0.1_True_2, hybrid_0.6_0_True_2

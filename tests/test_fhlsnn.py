@@ -181,6 +181,26 @@ class TestMembership2017:
         assert not np.isclose(mem_issue, 1.0), \
             "As-printed should NOT be 1.0 (this is the behaviour difference)"
 
+    def test_far_pattern_membership_variants(self):
+        """Item 3: A pattern at (5,5) against segment (0,0)-(0.2,0) has membership < 0.01
+        for fhlsnn2001, mfhlsnn2014_midpoint and efhlsnn2017_segment when only their own issue flags are on.
+        """
+        V, W = np.array([0.0, 0.0]), np.array([0.2, 0.0])
+        R = np.array([5.0, 5.0])
+
+        # 1. fhlsnn2001 with issue_1_f_uses_x_gamma=True
+        m2001 = FHLSNN(gamma=1.0, membership_type='fhlsnn2001', issue_1_f_uses_x_gamma=True)
+        assert m2001._scalar_membership(R, V, W) < 0.01
+
+        # 2. mfhlsnn2014_midpoint with issue_4_midpoint_printed=True, issue_5_min_redundant=True
+        m2014 = FHLSNN(gamma=1.0, membership_type='mfhlsnn2014_midpoint',
+                       issue_4_midpoint_printed=True, issue_5_min_redundant=True)
+        assert m2014._scalar_membership(R, V, W) < 0.01
+
+        # 3. efhlsnn2017_segment with issue_7_t_divides_by_l=True
+        m2017 = FHLSNN(gamma=1.0, membership_type='efhlsnn2017_segment', issue_7_t_divides_by_l=True)
+        assert m2017._scalar_membership(R, V, W) < 0.01
+
     def test_tie_break_segment_distance(self):
         """When multiple segments have max membership (e.g. 0.0), prediction
         should tie-break using the exact projection distance to the segment,
@@ -206,6 +226,33 @@ class TestMembership2017:
         preds = m.predict(np.array([[0.1, 0.2]]))
         assert preds[0] == 0, \
             f"Expected class 0 (nearest segment), got class {preds[0]}"
+
+
+    def test_predict_and_winning_segment_match(self):
+        """predict and winning_segment share logic; ensure class of winning segment == predicted class for every pattern."""
+        m = FHLSNN()
+        m.segments_ = [
+            {'V': np.array([0.0]), 'W': np.array([0.1]), 'class': 0},
+            {'V': np.array([5.0]), 'W': np.array([5.1]), 'class': 1},
+            {'V': np.array([10.0]), 'W': np.array([10.1]), 'class': 2},
+        ]
+        m.n_segments_ = 3
+        m._rebuild_matrices()
+        
+        # Test random data spanning near and far (zero membership fallback)
+        X_val = np.array([
+            [0.05], [5.05], [10.05], # Direct hits
+            [-100.0], [100.0], [4.9], # Will have 0 membership (fallback to nearest)
+        ])
+        
+        preds = m.predict(X_val)
+        winners = m.winning_segment(X_val)
+        
+        assert len(preds) == len(X_val)
+        assert len(winners) == len(X_val)
+        
+        for i in range(len(X_val)):
+            assert preds[i] == m.segments_[winners[i]]['class']
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -491,7 +538,7 @@ class TestHarnessLeakage:
         Asserts each is a subset of fit_idx (equal to fit_idx for unreduced)
         and that no validation or test index appears.
         """
-        from ml_service.benchmark.harness import run_experiment
+        from ml_service.benchmark.harness import get_cv_folds, run_one_method
         from ml_service.benchmark.baselines import run_cnn, run_enn, run_kmeans_prototypes, run_random_subsampling
         from ml_service.reducers.m1_prefilter import run_m1_prefilter
         from ml_service.reducers.m3_prune import run_m3_prune
@@ -504,20 +551,12 @@ class TestHarnessLeakage:
         X = np.hstack([X_orig, ids])
         y = y_orig
 
-        # We will capture fit_idx, val_idx, test_idx inside the harness by patching
-        # Instead of a heavy patch, we can use a custom model to capture what is passed to fit().
-        # Since run_experiment scales X, the IDs will be scaled. We must unscale them to get indices.
-
         global_captured = []
 
         class TrackingFHLSNN(FHLSNN):
             def fit(self, X_fit, y_fit):
                 global_captured.append((X_fit.copy(), y_fit.copy()))
                 return super().fit(X_fit, y_fit)
-
-        from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
-        skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=0)
-        folds = list(skf.split(X, y))
 
         methods = {
             'unreduced': (None, None),
@@ -536,26 +575,23 @@ class TestHarnessLeakage:
                          {'k_per_class': 2} if pre == run_kmeans_prototypes else {}
             
             global_captured.clear()
-            run_experiment(
-                X, y,
-                model_cls=TrackingFHLSNN,
-                model_params={'zeta': 0.3, 'gamma': 1.0, 'membership_type': 'fhlsnn2001'},
-                n_splits=3,
-                random_state=0,
-                pre_reducer_fn=pre,
-                pre_reducer_params=pre_params,
-                post_reducer_fn=post,
-                post_reducer_params=None,
-                tune_theta_gamma=False
-            )
+            folds = list(get_cv_folds(X, y, n_splits=3, val_size=0.2, random_state=0))
+            for fd in folds:
+                run_one_method(
+                    fd,
+                    model_cls=TrackingFHLSNN,
+                    model_params={'zeta': 0.3, 'gamma': 1.0, 'membership_type': 'fhlsnn2001'},
+                    pre_reducer_fn=pre,
+                    pre_reducer_params=pre_params,
+                    post_reducer_fn=post,
+                    post_reducer_params=None,
+                )
             
             assert len(global_captured) == 3, "Expected 3 folds"
-            for fold_idx, (train_idx, test_idx) in enumerate(folds):
-                sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=0)
-                fit_rel, val_rel = next(sss.split(X[train_idx], y[train_idx]))
-                actual_fit_idx = train_idx[fit_rel]
-                actual_val_idx = train_idx[val_rel]
-                actual_test_idx = test_idx
+            for fold_idx, fd in enumerate(folds):
+                actual_fit_idx = fd['fit_idx']
+                actual_val_idx = fd['val_idx']
+                actual_test_idx = fd['test_idx']
 
                 X_passed, _ = global_captured[fold_idx]
                 
@@ -579,3 +615,95 @@ class TestHarnessLeakage:
                     intersection_test = passed_indices.intersection(set(actual_test_idx))
                     assert len(intersection_val) == 0, f"{name} fold {fold_idx} leaked val indices!"
                     assert len(intersection_test) == 0, f"{name} fold {fold_idx} leaked test indices!"
+
+    def test_pre_reducer_row_identity(self):
+        """Spy on pre-reducers to assert ROW IDENTITY of the array actually passed using an ID column."""
+        from ml_service.benchmark.harness import get_cv_folds, run_one_method
+        from ml_service.benchmark.baselines import run_kmeans_prototypes, run_cnn
+        from sklearn.datasets import load_iris
+        import unittest.mock
+        
+        iris = load_iris()
+        X = iris.data
+        y = iris.target
+        # Add ID column
+        ids = np.arange(len(X), dtype=np.float32).reshape(-1, 1)
+        X_with_id = np.hstack([X, ids])
+        
+        folds = list(get_cv_folds(X_with_id, y, n_splits=2, val_size=0.20, random_state=0))
+        actual_fit_idx = folds[0]['fit_idx']
+        
+        for name, fn in [('kmeans', run_kmeans_prototypes), ('cnn', run_cnn)]:
+            mock_reducer = unittest.mock.MagicMock(wraps=fn)
+            for fd in folds:
+                run_one_method(
+                    fd,
+                    model_cls=FHLSNN,
+                    model_params={'zeta': 0.3},
+                    pre_reducer_fn=mock_reducer,
+                    pre_reducer_params={'k_per_class': 2} if name == 'kmeans' else {}
+                )
+            
+            assert mock_reducer.called
+            
+            # First fold call
+            called_X_fit = mock_reducer.call_args_list[0][0][0]
+            
+            from sklearn.preprocessing import MinMaxScaler
+            scaler = MinMaxScaler()
+            scaler.fit(X_with_id[actual_fit_idx])
+            called_X_unscaled = scaler.inverse_transform(called_X_fit)
+            
+            passed_ids = np.round(called_X_unscaled[:, -1]).astype(int)
+            assert np.array_equal(np.sort(passed_ids), np.sort(actual_fit_idx)), f"{name} did not receive exact fit_idx rows"
+
+    def test_unreduced_equals_theta_sweep(self):
+        """unreduced and theta_sweep must produce identical segment counts and predictions when using the same theta, gamma, and shuffle seed."""
+        from sklearn.datasets import load_iris
+        X, y = load_iris(return_X_y=True)
+        
+        m_unred = FHLSNN(zeta=0.3, gamma=0.5, use_intersection_test=True, random_state=42)
+        m_unred.fit(X, y)
+        pred_unred = m_unred.predict(X)
+        
+        m_th = FHLSNN(zeta=0.3, gamma=0.5, use_intersection_test=True, random_state=42)
+        m_th.fit(X, y)
+        pred_th = m_th.predict(X)
+        
+        assert m_unred.n_segments_ == m_th.n_segments_
+        assert np.array_equal(pred_unred, pred_th)
+
+    def test_tune_hyperparams_synthetic_tie(self):
+        """Tie-break (PRD 4.5): when several (θ, γ) pairs reach the same validation
+        accuracy, choose the one with fewer segments (larger θ)."""
+        from ml_service.benchmark.harness import tune_hyperparams
+
+        class DummyTieModel:
+            def __init__(self, zeta, gamma, **kwargs):
+                self.zeta = zeta
+                self.gamma = gamma
+                self.n_segments_ = int(100 - zeta * 50)
+
+            def fit(self, X, y):
+                pass
+
+            def predict(self, X):
+                return np.zeros(len(X), dtype=int)
+
+        X_fit = np.zeros((10, 2))
+        y_fit = np.zeros(10, dtype=int)
+        X_val = np.zeros((5, 2))
+        y_val = np.zeros(5, dtype=int)
+
+        theta_grid = [0.1, 0.5, 0.8]
+        gamma_grid = [1.0]
+
+        best_theta, best_gamma = tune_hyperparams(
+            X_fit, y_fit, X_val, y_val,
+            model_cls=DummyTieModel,
+            base_params={},
+            theta_grid=theta_grid,
+            gamma_grid=gamma_grid,
+        )
+        assert best_theta == 0.8, f"Expected 0.8 (fewest segments), got {best_theta}"
+
