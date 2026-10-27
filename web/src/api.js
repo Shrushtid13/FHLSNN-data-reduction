@@ -1,4 +1,4 @@
-import { API_BASE_URL } from './supabase.js';
+import { API_BASE_URL, supabase } from './supabase.js';
 
 export async function apiFetch(endpoint, token, options = {}) {
   const headers = {
@@ -31,6 +31,14 @@ export async function apiFetch(endpoint, token, options = {}) {
   }
 
   if (!response.ok) {
+    if (response.status === 401) {
+      try {
+        await supabase.auth.signOut();
+      } catch (_) {}
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
+    }
     const errorMsg = data?.detail || data?.error || `Request failed with status ${response.status}`;
     const err = new Error(errorMsg);
     err.status = response.status;

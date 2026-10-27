@@ -1,3 +1,7 @@
+# ─────────────────────────────────────────────────────────────
+#  FHLSNN Platform – .gitignore
+# ─────────────────────────────────────────────────────────────
+
 # Environment & credentials
 .env
 .env.*
@@ -42,6 +46,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+.pnpm-store/
 
 # Local databases & caches
 *.sqlite
@@ -49,8 +54,19 @@ pnpm-debug.log*
 *.db-journal
 *.db-wal
 
+# ML model artifacts & checkpoints
+*.pkl
+*.joblib
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.onnx
+*.safetensors
+
 # Proprietary / source papers & PDFs
 docs/papers/
+docs/design/
 *.pdf
 *.pptx
 
@@ -67,7 +83,12 @@ results/VOID_*
 # OS & editor artifacts
 .DS_Store
 Thumbs.db
+Desktop.ini
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
+
+# Fontsource cache (bundled at build time)
+@fontsource/

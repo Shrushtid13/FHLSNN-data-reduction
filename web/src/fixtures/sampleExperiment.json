@@ -1,0 +1,115 @@
+{
+  "id": "032b4347-81ec-4a7b-a25e-000000000001",
+  "dataset_id": "iris-sample-dataset-001",
+  "dataset_name": "Iris",
+  "method": "hybrid",
+  "params": {
+    "variant": "fhlsnn2001",
+    "keep_fraction": 0.5,
+    "interior_keep_rate": 0.1,
+    "min_wins": 1,
+    "tune_hyperparams": true
+  },
+  "seed": 42,
+  "status": "done",
+  "progress": 100,
+  "metrics": {
+    "accuracy": 0.957,
+    "macro_f1": 0.956,
+    "reduction_vs_raw": 0.5,
+    "zero_mem_frac": 0.0,
+    "stored_vectors": 48,
+    "n_fit": 96,
+    "n_val": 24,
+    "n_test": 30,
+    "n_segments": 24,
+    "best_theta": 0.4,
+    "best_gamma": 0.25,
+    "reference": {
+      "accuracy": 0.956,
+      "macro_f1": 0.955,
+      "stored_vectors": 96,
+      "n_segments": 48
+    }
+  },
+  "facts": {
+    "stage": "evaluate",
+    "log": [
+      "fit set 96, validation 24, test 30",
+      "theta grid: 6 values, gamma grid: 5 values",
+      "tuning: 30 of 30 pairs evaluated",
+      "best so far: theta 0.4, gamma 0.25",
+      "training unreduced reference model...",
+      "applying M1 boundary-proximity filter (keep_fraction=0.5, interior_keep_rate=0.1)...",
+      "retained 48 of 96 patterns after M1",
+      "training FHLSNN on reduced subset...",
+      "evaluating on validation set for M3 contribution pruning...",
+      "pruned 0 segments with < 1 validation wins",
+      "final model has 24 segments, 48 stored vectors",
+      "evaluating on held-out test split (30 patterns)...",
+      "test evaluation completed successfully."
+    ],
+    "curve": {
+      "series": [
+        {
+          "name": "Hybrid (this run)",
+          "style": "solid",
+          "points": [
+            { "x": 0.0, "y": 0.956 },
+            { "x": 0.25, "y": 0.96 },
+            { "x": 0.5, "y": 0.957 },
+            { "x": 0.7, "y": 0.91 },
+            { "x": 0.85, "y": 0.82 }
+          ]
+        },
+        {
+          "name": "Random subsampling",
+          "style": "dashed",
+          "points": [
+            { "x": 0.0, "y": 0.956 },
+            { "x": 0.25, "y": 0.94 },
+            { "x": 0.5, "y": 0.92 },
+            { "x": 0.7, "y": 0.88 },
+            { "x": 0.85, "y": 0.83 }
+          ]
+        },
+        {
+          "name": "Unreduced baseline",
+          "style": "dotted",
+          "points": [
+            { "x": 0.0, "y": 0.956 }
+          ]
+        }
+      ]
+    },
+    "per_class": [
+      { "label": "Setosa", "before": 32, "kept": 16 },
+      { "label": "Versicolor", "before": 32, "kept": 16 },
+      { "label": "Virginica", "before": 32, "kept": 16 }
+    ],
+    "pca": {
+      "points": [
+        { "x": -2.68, "y": 0.32, "label": "Setosa", "kept": true },
+        { "x": -2.71, "y": -0.18, "label": "Setosa", "kept": true },
+        { "x": -2.88, "y": -0.14, "label": "Setosa", "kept": false },
+        { "x": -2.74, "y": -0.32, "label": "Setosa", "kept": true },
+        { "x": -2.72, "y": 0.33, "label": "Setosa", "kept": false },
+        { "x": 0.6, "y": -0.22, "label": "Versicolor", "kept": true },
+        { "x": 0.42, "y": -0.33, "label": "Versicolor", "kept": false },
+        { "x": 0.7, "y": 0.28, "label": "Versicolor", "kept": true },
+        { "x": 0.54, "y": -0.01, "label": "Versicolor", "kept": true },
+        { "x": 0.68, "y": -0.42, "label": "Versicolor", "kept": false },
+        { "x": 1.9, "y": 0.12, "label": "Virginica", "kept": true },
+        { "x": 1.54, "y": -0.47, "label": "Virginica", "kept": false },
+        { "x": 2.04, "y": 0.53, "label": "Virginica", "kept": true },
+        { "x": 1.44, "y": -0.56, "label": "Virginica", "kept": false },
+        { "x": 1.78, "y": 0.08, "label": "Virginica", "kept": true }
+      ]
+    },
+    "explanation": {
+      "text": "Hybrid kept 48 of 96 training patterns (50.0%). Accuracy on the test split changed by +0.1 pp against the unreduced model, which is smaller than the order noise of about 1.6 pp measured for this dataset, so the two cannot be told apart. Every class keeps at least two patterns."
+    }
+  },
+  "error": null,
+  "created_at": "2026-10-27T12:00:00.000Z"
+}

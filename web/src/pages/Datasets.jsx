@@ -1,12 +1,59 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../api.js';
+import { StatusPill } from '../components/StatusPill.jsx';
+import { EmptyState } from '../components/EmptyState.jsx';
+import { ErrorBanner } from '../components/ErrorBanner.jsx';
+
+/**
+ * Calculates class balance from class_counts:
+ * ratio = max(counts) / min(counts)
+ * - below 1.5: "Balanced"
+ * - 1.5 to 3: "Mildly imbalanced"
+ * - above 3: "Imbalanced"
+ */
+export function computeClassBalance(classCounts) {
+  if (!classCounts || typeof classCounts !== 'object') {
+    return { label: 'not available', ratio: null };
+  }
+  const counts = Object.values(classCounts).map(Number).filter((n) => !isNaN(n) && n > 0);
+  if (counts.length === 0) {
+    return { label: 'not available', ratio: null };
+  }
+  if (counts.length === 1) {
+    return { label: 'Balanced', ratio: 1.0 };
+  }
+  const max = Math.max(...counts);
+  const min = Math.min(...counts);
+  if (min === 0) {
+    return { label: 'Imbalanced', ratio: Infinity };
+  }
+  const ratio = max / min;
+  let label = 'Balanced';
+  if (ratio > 3) {
+    label = 'Imbalanced';
+  } else if (ratio >= 1.5) {
+    label = 'Mildly imbalanced';
+  }
+  return { label, ratio };
+}
 
 export function Datasets({ token, onSelectDatasetForExperiment }) {
+  const navigate = useNavigate();
   const [datasets, setDatasets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState(null);
 
-  // Upload Form State
+  // Client-side Filters
+  const [searchTerm, setSearchTerm] = useState('');
+  const [sizeFilter, setSizeFilter] = useState('All'); // 'All' | 'under_1000' | 'over_10000'
+  const [sourceFilter, setSourceFilter] = useState('All'); // 'All' | 'Benchmark' | 'My uploads'
+
+  // Selected row checkboxes
+  const [selectedIds, setSelectedIds] = useState([]);
+
+  // Upload Modal State
+  const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [file, setFile] = useState(null);
   const [name, setName] = useState('');
   const [headers, setHeaders] = useState([]);
@@ -33,7 +80,58 @@ export function Datasets({ token, onSelectDatasetForExperiment }) {
     }
   }, [token]);
 
-  // Extract CSV header when file is selected
+  // Determine if any dataset contains the optional 'source' column
+  const hasSourceColumn = datasets.some((d) => d && (d.source !== undefined && d.source !== null));
+
+  // Client-side filtered list
+  const filteredDatasets = datasets.filter((dataset) => {
+    // Name filter
+    if (searchTerm.trim()) {
+      const term = searchTerm.toLowerCase();
+      if (!dataset.name?.toLowerCase().includes(term)) {
+        return false;
+      }
+    }
+
+    // Size filter
+    if (sizeFilter === 'under_1000') {
+      if (dataset.n_rows == null || dataset.n_rows >= 1000) return false;
+    } else if (sizeFilter === 'over_10000') {
+      if (dataset.n_rows == null || dataset.n_rows <= 10000) return false;
+    }
+
+    // Source filter
+    if (sourceFilter !== 'All') {
+      const isBenchmark = dataset.source === 'benchmark';
+      if (sourceFilter === 'Benchmark' && !isBenchmark) return false;
+      if (sourceFilter === 'My uploads' && isBenchmark) return false;
+    }
+
+    return true;
+  });
+
+  const toggleSelect = (id) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.length === filteredDatasets.length && filteredDatasets.length > 0) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(filteredDatasets.map((d) => d.id));
+    }
+  };
+
+  const handleReduce = (datasetId) => {
+    if (onSelectDatasetForExperiment) {
+      onSelectDatasetForExperiment(datasetId);
+    }
+    navigate(`/experiments/new?dataset=${datasetId}`);
+  };
+
+  // Upload Form Handlers
   const handleFileChange = (e) => {
     const selectedFile = e.target.files[0];
     setUploadError(null);
@@ -48,12 +146,10 @@ export function Datasets({ token, onSelectDatasetForExperiment }) {
       return;
     }
 
-    // Auto-fill dataset name from filename (without .csv)
     if (!name) {
       setName(selectedFile.name.replace(/\.[^/.]+$/, ''));
     }
 
-    // Read first slice of file to extract header line
     const reader = new FileReader();
     reader.onload = (evt) => {
       try {
@@ -66,7 +162,6 @@ export function Datasets({ token, onSelectDatasetForExperiment }) {
             .filter(Boolean);
           setHeaders(cols);
           if (cols.length > 0) {
-            // Default target column to the last column or 'target'
             const defaultTarget = cols.includes('target') ? 'target' : cols[cols.length - 1];
             setTargetColumn(defaultTarget);
           }
@@ -75,7 +170,7 @@ export function Datasets({ token, onSelectDatasetForExperiment }) {
         setUploadError(`Could not parse CSV header: ${err.message}`);
       }
     };
-    reader.readAsText(selectedFile.slice(0, 1024 * 32)); // read first 32KB
+    reader.readAsText(selectedFile.slice(0, 1024 * 32));
   };
 
   const handleUploadSubmit = async (e) => {
@@ -103,16 +198,14 @@ export function Datasets({ token, onSelectDatasetForExperiment }) {
         body: formData,
       });
 
-      // Reset form
+      // Reset form and close dialog
       setFile(null);
       setName('');
       setHeaders([]);
       setTargetColumn('');
-      // Reset input element
-      const fileInput = document.getElementById('csv-file-input');
-      if (fileInput) fileInput.value = '';
+      setIsUploadOpen(false);
 
-      // Refresh datasets list
+      // Refresh datasets
       await fetchDatasets();
     } catch (err) {
       setUploadError(err.message || 'Upload failed');
@@ -123,117 +216,276 @@ export function Datasets({ token, onSelectDatasetForExperiment }) {
 
   return (
     <div>
-      {/* Upload Form Card */}
-      <div className="card">
-        <h2>Upload New Dataset</h2>
-        {uploadError && <div className="alert alert-danger" role="alert">{uploadError}</div>}
+      {/* Header with Title and Upload action */}
+      <div className="row" style={{ justifyContent: 'space-between', marginBottom: '16px' }}>
+        <h1>Datasets</h1>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => setIsUploadOpen(true)}
+          data-testid="upload-dataset-btn"
+        >
+          Upload dataset
+        </button>
+      </div>
 
-        <form onSubmit={handleUploadSubmit}>
-          <div className="form-group">
-            <label htmlFor="csv-file-input">CSV File (Max 10 MB, 20-50k rows)</label>
+      {errorMsg && <ErrorBanner message={errorMsg} />}
+
+      {/* Filter Card */}
+      <section className="card" style={{ marginBottom: '18px' }}>
+        <div className="row">
+          <label>
+            Search
             <input
-              id="csv-file-input"
-              type="file"
-              accept=".csv"
-              className="form-control"
-              onChange={handleFileChange}
-              required
+              placeholder="Search by name"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              data-testid="name-search-input"
             />
-          </div>
+          </label>
 
-          <div className="form-group">
-            <label htmlFor="dataset-name">Dataset Name</label>
-            <input
-              id="dataset-name"
-              type="text"
-              className="form-control"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Iris Flower Dataset"
-              required
-            />
-          </div>
+          <label>
+            Source
+            <select
+              value={sourceFilter}
+              onChange={(e) => setSourceFilter(e.target.value)}
+              data-testid="source-filter-select"
+            >
+              <option value="All">All</option>
+              <option value="Benchmark">Benchmark</option>
+              <option value="My uploads">My uploads</option>
+            </select>
+          </label>
 
-          <div className="form-group">
-            <label htmlFor="target-column">Target Column (Classification Label)</label>
-            {headers.length > 0 ? (
-              <select
-                id="target-column"
-                className="form-control"
-                value={targetColumn}
-                onChange={(e) => setTargetColumn(e.target.value)}
-                required
-              >
-                {headers.map((col) => (
-                  <option key={col} value={col}>
-                    {col}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                id="target-column"
-                type="text"
-                className="form-control"
-                value={targetColumn}
-                onChange={(e) => setTargetColumn(e.target.value)}
-                placeholder="Upload a CSV to pick from header, or enter column name"
-                required
-              />
-            )}
-          </div>
+          <label>
+            Size
+            <select
+              value={sizeFilter}
+              onChange={(e) => setSizeFilter(e.target.value)}
+              data-testid="size-filter-select"
+            >
+              <option value="All">All</option>
+              <option value="under_1000">Under 1,000 rows</option>
+              <option value="over_10000">Over 10,000 rows</option>
+            </select>
+          </label>
 
-          <button type="submit" className="btn" disabled={uploading}>
-            {uploading ? 'Validating & Uploading...' : 'Upload Dataset'}
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {}}
+            data-testid="search-filter-btn"
+          >
+            Search
           </button>
-        </form>
-      </div>
+        </div>
+      </section>
 
-      {/* Datasets List Card */}
-      <div className="card">
-        <h2>Your Datasets</h2>
-        {errorMsg && <div className="alert alert-danger" role="alert">{errorMsg}</div>}
+      {/* Datasets Table Card */}
+      <section className="card">
+        <h2>Your datasets</h2>
+
         {loading ? (
-          <p>Loading datasets...</p>
-        ) : datasets.length === 0 ? (
-          <p>No datasets uploaded yet. Upload your first dataset using the form above.</p>
+          <p className="m">Loading datasets...</p>
+        ) : filteredDatasets.length === 0 ? (
+          <EmptyState
+            title="No datasets found"
+            message={
+              datasets.length === 0
+                ? "You haven't uploaded any datasets yet. Click 'Upload dataset' to get started."
+                : 'No datasets match your search or filter criteria.'
+            }
+            actionText="Upload dataset"
+            onAction={() => setIsUploadOpen(true)}
+          />
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Target Column</th>
-                <th>Rows (n_rows)</th>
-                <th>Features (n_features)</th>
-                <th>Classes (n_classes)</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {datasets.map((d) => (
-                <tr key={d.id}>
-                  <td><strong>{d.name}</strong></td>
-                  <td>{d.target_column || 'not available'}</td>
-                  <td>{d.n_rows !== null && d.n_rows !== undefined ? d.n_rows : 'not available'}</td>
-                  <td>{d.n_features !== null && d.n_features !== undefined ? d.n_features : 'not available'}</td>
-                  <td>{d.n_classes !== null && d.n_classes !== undefined ? d.n_classes : 'not available'}</td>
-                  <td>
-                    {onSelectDatasetForExperiment && (
-                      <button
-                        className="btn"
-                        style={{ padding: '0.3rem 0.6rem', fontSize: '0.8rem' }}
-                        onClick={() => onSelectDatasetForExperiment(d.id)}
-                      >
-                        New Experiment
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <>
+            <div className="table-box">
+              <table>
+                <thead>
+                  <tr>
+                    <th style={{ width: '40px' }}>
+                      <input
+                        type="checkbox"
+                        checked={
+                          filteredDatasets.length > 0 &&
+                          selectedIds.length === filteredDatasets.length
+                        }
+                        onChange={toggleSelectAll}
+                        aria-label="Select all datasets"
+                      />
+                    </th>
+                    <th>Name</th>
+                    <th>Rows</th>
+                    <th>Features</th>
+                    <th>Classes</th>
+                    <th>Class balance</th>
+                    {hasSourceColumn && <th>Source</th>}
+                    <th>Status</th>
+                    <th style={{ width: '90px' }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredDatasets.map((d) => {
+                    const { label: balanceLabel, ratio } = computeClassBalance(d.class_counts);
+                    const ratioTitle = ratio !== null ? `Ratio: ${ratio.toFixed(2)}` : undefined;
+                    const isProfiled = d.profile !== null && d.profile !== undefined;
+
+                    return (
+                      <tr key={d.id} data-testid={`dataset-row-${d.id}`}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.includes(d.id)}
+                            onChange={() => toggleSelect(d.id)}
+                            aria-label={`Select ${d.name}`}
+                          />
+                        </td>
+                        <td>
+                          <b>{d.name}</b>
+                        </td>
+                        <td>
+                          {d.n_rows !== null && d.n_rows !== undefined
+                            ? d.n_rows.toLocaleString()
+                            : 'not available'}
+                        </td>
+                        <td>
+                          {d.n_features !== null && d.n_features !== undefined
+                            ? d.n_features
+                            : 'not available'}
+                        </td>
+                        <td>
+                          {d.n_classes !== null && d.n_classes !== undefined
+                            ? d.n_classes
+                            : 'not available'}
+                        </td>
+                        <td>
+                          <span
+                            title={ratioTitle}
+                            style={{ cursor: ratioTitle ? 'help' : 'default' }}
+                            data-testid={`balance-${d.id}`}
+                          >
+                            {balanceLabel}
+                          </span>
+                        </td>
+                        {hasSourceColumn && (
+                          <td>
+                            {d.source === 'benchmark' ? 'Benchmark' : 'My uploads'}
+                          </td>
+                        )}
+                        <td>
+                          {isProfiled ? (
+                            <StatusPill status="Profiled" label="Profiled" />
+                          ) : (
+                            <StatusPill status="queued" label="Not profiled" />
+                          )}
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn g"
+                            onClick={() => handleReduce(d.id)}
+                            data-testid={`reduce-btn-${d.id}`}
+                          >
+                            Reduce
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="m" style={{ marginTop: '14px' }}>
+              Showing {filteredDatasets.length} of {datasets.length} datasets
+            </p>
+          </>
         )}
-      </div>
+      </section>
+
+      {/* Upload Dataset Dialog / Modal */}
+      {isUploadOpen && (
+        <div
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="upload-dialog-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsUploadOpen(false);
+          }}
+        >
+          <div className="modal-card">
+            <h2 id="upload-dialog-title">Upload dataset</h2>
+
+            {uploadError && <ErrorBanner message={uploadError} />}
+
+            <form onSubmit={handleUploadSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <label>
+                CSV File (Max 10 MB, 20–50k rows)
+                <input
+                  id="csv-file-input"
+                  type="file"
+                  accept=".csv"
+                  onChange={handleFileChange}
+                  required
+                />
+              </label>
+
+              <label>
+                Dataset Name
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. Iris Flower"
+                  required
+                />
+              </label>
+
+              <label>
+                Target Column (Classification Label)
+                {headers.length > 0 ? (
+                  <select
+                    value={targetColumn}
+                    onChange={(e) => setTargetColumn(e.target.value)}
+                    required
+                  >
+                    {headers.map((col) => (
+                      <option key={col} value={col}>
+                        {col}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={targetColumn}
+                    onChange={(e) => setTargetColumn(e.target.value)}
+                    placeholder="Pick from header or type target column"
+                    required
+                  />
+                )}
+              </label>
+
+              <div className="row" style={{ justifyContent: 'flex-end', marginTop: '10px' }}>
+                <button
+                  type="button"
+                  className="btn g"
+                  onClick={() => setIsUploadOpen(false)}
+                  disabled={uploading}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="btn" disabled={uploading}>
+                  {uploading ? 'Validating & Uploading...' : 'Upload dataset'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
+export default Datasets;
